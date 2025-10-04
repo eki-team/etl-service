@@ -35,3 +35,6 @@ tests/
 
 # Ignorar archivos de documentación generados
 CONTEXT/
+
+
+dry_runs/

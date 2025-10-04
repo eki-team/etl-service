@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     
     # Environment
     ENVIRONMENT: str = "development"
+    
+    # Startup Configuration
+    AUTO_LOAD_ARTICLES: bool = True  # Set to False to skip automatic article loading on startup
 
     @property
     def MONGO_URL(self) -> str:

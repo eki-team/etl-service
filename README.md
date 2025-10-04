@@ -1,18 +1,27 @@
 
 # ETL-SERVICE
 
-Backend del sistema **ETL-SERVICE**, desarrollado con **FastAPI** y **PostgreSQL**.
+Backend del sistema **ETL-SERVICE** para procesamiento de artículos científicos de NASA, desarrollado con **FastAPI** y **MongoDB**.
 
 ## 🚀 Tecnologías utilizadas
 
-- Python 3.11+
+- Python 3.13+
 - FastAPI
-- SQLAlchemy
-- Alembic
+- MongoDB (Motor - async driver)
 - Pydantic / Pydantic Settings
-- PostgreSQL
+- Sentence Transformers (embeddings)
+- NumPy (vector similarity)
 - Uvicorn
 - dotenv
+
+## 🎯 Características principales
+
+- ✅ **Procesamiento de artículos científicos**: Chunking inteligente con overlap configurable
+- ✅ **Detección de duplicados**: Sistema de similitud vectorial (cosine similarity)
+- ✅ **Generación de embeddings**: Modelo all-MiniLM-L6-v2 (384 dimensiones)
+- ✅ **Generación automática de tags**: Clasificación de artículos por categorías
+- ✅ **Carga automática al inicio**: Procesamiento de artículos desde JSON al arrancar
+- ✅ **Modo dry-run**: Previsualización de chunks sin inserción en BD
 
 ## 📦 Instalación de dependencias
 
@@ -23,43 +32,59 @@ pip install -r requirements.txt
 ## ⚙️ Variables de entorno para desarrollo local
 
 ```bash
-DATABASE_URL=postgresql://usuario_db:password_db@db:5432/nombre_db
+# MongoDB Configuration
+MONGO_USER=admin
+MONGO_PASSWORD=admin
+MONGO_HOST=localhost
+MONGO_PORT=27017
+MONGO_DB=mydb
 
-POSTGRES_USER=usuario_db
-POSTGRES_PASSWORD=password_db
-POSTGRES_DB=nombre_db
+# Environment
+ENVIRONMENT=development
 
-DB_HOST=db
-DB_PORT=5432
+# Startup Configuration
+AUTO_LOAD_ARTICLES=true  # Set to false to skip automatic article loading on startup
 
-SECRET_KEY=tu_clave_secreta
-ALGORITHM=HS256
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-
-RUN_MIGRATIONS=true
-AUTO_GENERATE_MIGRATION=false  
-SEED_ON_START=false        
-ALEMBIC_STAMP_TO_HEAD=false 
+# CORS Configuration
+CORS_ORIGINS=http://localhost,http://localhost:4200
 ```
 
 ## ⚙️ Variables de entorno para producción
 
 ```bash
-ACCESS_TOKEN_EXPIRE_MINUTES=30
-ALEMBIC_STAMP_TO_HEAD=false
-ALGORITHM=HS256
-AUTO_GENERATE_MIGRATION=false
-DATABASE_URL=internal_url_db_prod
-DB_HOST=host_db_prod
-DB_PORT=5432
-POSTGRES_DB=nombre_db_prod
-POSTGRES_PASSWORD=password_db_prod
-POSTGRES_USER=usuario_db_prod
-RESET_ALEMBIC=false
-RESET_PUBLIC_SCHEMA=false
-RUN_MIGRATIONS=true
-SECRET_KEY=tu_clave_secreta
-SEED_ON_START=false
+# MongoDB Configuration
+MONGO_URI="mongodb+srv://user:password@cluster.mongodb.net/dbname?retryWrites=true&w=majority"
+MONGO_DB=production_db
+
+# Environment
+ENVIRONMENT=production
+
+# Startup Configuration
+AUTO_LOAD_ARTICLES=false  # Disable auto-loading in production, load manually
+
+# CORS Configuration
+CORS_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
+```
+
+## 🚀 Inicio automático de datos
+
+Al iniciar la aplicación, el sistema automáticamente:
+
+1. **Conecta a MongoDB** y crea la colección `chunks` con índices optimizados
+2. **Carga artículos** desde `articles/complete_scrapping.json` (si `AUTO_LOAD_ARTICLES=true`)
+3. **Procesa cada artículo**:
+   - Divide el texto en chunks con overlap (default: 1500 chars, 400 overlap)
+   - Genera embeddings vectoriales para detección de duplicados
+   - Genera tags y categorías automáticamente
+   - Detecta y omite chunks duplicados (threshold: 95% similitud)
+   - Almacena en MongoDB con metadata completa
+
+### Carga manual de artículos
+
+Si deseas cargar artículos sin reiniciar el servidor:
+
+```bash
+python scripts/load_articles.py
 ```
 
 ## 📁 Estructura del proyecto
