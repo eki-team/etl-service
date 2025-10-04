@@ -1,0 +1,37 @@
+# Environment variables
+.env
+.env.prod
+
+# Database
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Docker
+.dockerignore
+
+# IDE
+.vscode/
+.idea/
+
+# Archivos de configuración de sistemas operativos
+.DS_Store   # macOS
+Thumbs.db   # Windows
+
+# Archivos temporales de vim
+*.swp
+
+# Ignorar archivos de prueba
+tests/
+
+# Ignorar archivos de documentación generados
+CONTEXT/
