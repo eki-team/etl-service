@@ -15,6 +15,16 @@ class Settings(BaseSettings):
     
     # Startup Configuration
     AUTO_LOAD_ARTICLES: bool = True  # Set to False to skip automatic article loading on startup
+    DRY_RUN: bool = False  # Set to True to save to TXT files instead of MongoDB
+    ARTICLES_JSON_FILE: str = "complete_scrapping.json"  # Name of the JSON file to load from articles/ directory
+    
+    # OpenAI Configuration
+    OPENAI_API_KEY: str = ""
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+    OPENAI_EMBEDDING_DIMENSIONS: int = 1536
+    OPENAI_BATCH_SIZE: int = 2048
+    OPENAI_MAX_RETRIES: int = 3
+    OPENAI_TIMEOUT: int = 60
 
     @property
     def MONGO_URL(self) -> str:

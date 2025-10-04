@@ -1,108 +1,205 @@
 """
-Service for generating embeddings and performing vector similarity search
+Service for generating embeddings using OpenAI API
 """
 from typing import List, Dict, Any, Optional
 import numpy as np
 from datetime import datetime
 import time
+from openai import OpenAI
+from app.core.config import settings
 
 
 class EmbeddingService:
-    """Service for generating text embeddings"""
+    """Service for generating text embeddings using OpenAI API"""
     
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        """
-        Initialize embedding service
-        
-        Args:
-            model_name: Name of the embedding model to use
-        """
-        self.model_name = model_name
-        self.model = None
-        self._load_model()
+    def __init__(self):
+        """Initialize OpenAI embedding service"""
+        self.model_name = settings.OPENAI_EMBEDDING_MODEL
+        self.batch_size = settings.OPENAI_BATCH_SIZE
+        self.openai_client = None
+        self._init_openai()
     
-    def _load_model(self):
-        """Load the embedding model"""
+    def _init_openai(self):
+        """Initialize OpenAI client"""
         try:
-            from sentence_transformers import SentenceTransformer
-            print(f"📦 Loading embedding model: {self.model_name}")
-            self.model = SentenceTransformer(self.model_name)
-            print(f"✅ Model loaded successfully")
+            if not settings.OPENAI_API_KEY:
+                raise ValueError("OPENAI_API_KEY not configured in .env file")
+            
+            print(f"🔑 Initializing OpenAI API")
+            print(f"   Model: {settings.OPENAI_EMBEDDING_MODEL}")
+            print(f"   Dimensions: {settings.OPENAI_EMBEDDING_DIMENSIONS}")
+            print(f"   Batch Size: {settings.OPENAI_BATCH_SIZE}")
+            
+            self.openai_client = OpenAI(
+                api_key=settings.OPENAI_API_KEY,
+                timeout=settings.OPENAI_TIMEOUT,
+                max_retries=settings.OPENAI_MAX_RETRIES
+            )
+            print(f"✅ OpenAI API initialized successfully")
+            
         except ImportError:
-            print("⚠️  sentence-transformers not installed")
-            print("   Install with: pip install sentence-transformers")
-            self.model = None
+            raise ImportError("openai package not installed. Install with: pip install openai")
         except Exception as e:
-            print(f"❌ Error loading model: {e}")
-            self.model = None
+            raise RuntimeError(f"Error initializing OpenAI: {e}")
     
-    def generate_embedding(self, text: str) -> Optional[List[float]]:
+    def generate_embedding(self, text: str, retry_count: int = 0) -> Optional[List[float]]:
         """
-        Generate embedding vector for text
+        Generate embedding vector for text using OpenAI API with automatic retry
         
         Args:
             text: Input text to embed
+            retry_count: Current retry attempt
             
         Returns:
-            List of floats representing the embedding vector, or None if model not available
+            List of floats representing the embedding vector, or None if error
         """
-        if self.model is None:
-            # Return dummy embedding for testing without model
-            return self._generate_dummy_embedding(text)
+        if not self.openai_client:
+            print("❌ OpenAI client not initialized")
+            return None
         
         try:
-            embedding = self.model.encode(text, convert_to_numpy=True)
-            return embedding.tolist()
+            # Truncate text if too long (OpenAI has token limits)
+            max_tokens = 8000  # Conservative limit
+            if len(text) > max_tokens * 4:  # Rough estimate: 1 token ≈ 4 chars
+                text = text[:max_tokens * 4]
+            
+            response = self.openai_client.embeddings.create(
+                model=settings.OPENAI_EMBEDDING_MODEL,
+                input=text,
+                dimensions=settings.OPENAI_EMBEDDING_DIMENSIONS
+            )
+            
+            return response.data[0].embedding
+            
         except Exception as e:
-            print(f"❌ Error generating embedding: {e}")
+            error_msg = str(e)
+            
+            # Handle rate limit errors with exponential backoff
+            if "rate_limit" in error_msg.lower() or "429" in error_msg:
+                if retry_count < settings.OPENAI_MAX_RETRIES:
+                    # Extract wait time from error message
+                    wait_time = 1.0  # Default 1 second
+                    if "try again in" in error_msg.lower():
+                        import re
+                        match = re.search(r'try again in (\d+)ms', error_msg)
+                        if match:
+                            wait_time = int(match.group(1)) / 1000.0
+                    
+                    wait_time = wait_time * (2 ** retry_count)  # Exponential backoff
+                    print(f"   ⏳ Rate limit hit, waiting {wait_time:.1f}s... (retry {retry_count + 1}/{settings.OPENAI_MAX_RETRIES})")
+                    time.sleep(wait_time)
+                    return self.generate_embedding(text, retry_count + 1)
+            
+            print(f"❌ Error generating OpenAI embedding: {e}")
             return None
     
-    def generate_embeddings_batch(self, texts: List[str]) -> List[Optional[List[float]]]:
+    def generate_embeddings_batch(self, texts: List[str], batch_size: int = None, retry_count: int = 0) -> List[Optional[List[float]]]:
         """
-        Generate embeddings for multiple texts
+        Generate embeddings for multiple texts with intelligent rate limit handling
         
         Args:
             texts: List of texts to embed
+            batch_size: Number of texts to process at once (default: from settings)
+            retry_count: Current retry attempt
             
         Returns:
             List of embedding vectors
         """
-        if self.model is None:
-            return [self._generate_dummy_embedding(text) for text in texts]
+        if not texts:
+            return []
+        
+        if not self.openai_client:
+            print("❌ OpenAI client not initialized")
+            return [None] * len(texts)
+        
+        # Use configured batch size if not specified
+        if batch_size is None:
+            batch_size = self.batch_size
+        
+        all_embeddings = []
+        total_batches = (len(texts) - 1) // batch_size + 1
         
         try:
-            embeddings = self.model.encode(texts, convert_to_numpy=True)
-            return [emb.tolist() for emb in embeddings]
-        except Exception as e:
-            print(f"❌ Error generating embeddings: {e}")
-            return [None] * len(texts)
-    
-    def _generate_dummy_embedding(self, text: str, dimensions: int = 384) -> List[float]:
-        """
-        Generate a dummy embedding for testing (deterministic based on text)
-        
-        Args:
-            text: Input text
-            dimensions: Embedding dimensions
+            # Process in batches with rate limit awareness
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                
+                # Truncate texts if needed
+                max_tokens = 8000
+                truncated_batch = [
+                    text[:max_tokens * 4] if len(text) > max_tokens * 4 else text
+                    for text in batch
+                ]
+                
+                print(f"   ⚡ Batch {batch_num}/{total_batches}: Processing {len(batch)} embeddings...")
+                start_time = time.time()
+                
+                # Retry logic for rate limits
+                success = False
+                current_retry = 0
+                
+                while not success and current_retry <= settings.OPENAI_MAX_RETRIES:
+                    try:
+                        response = self.openai_client.embeddings.create(
+                            model=settings.OPENAI_EMBEDDING_MODEL,
+                            input=truncated_batch,
+                            dimensions=settings.OPENAI_EMBEDDING_DIMENSIONS
+                        )
+                        
+                        batch_embeddings = [item.embedding for item in response.data]
+                        all_embeddings.extend(batch_embeddings)
+                        success = True
+                        
+                    except Exception as batch_error:
+                        error_msg = str(batch_error)
+                        
+                        # Handle rate limit with exponential backoff
+                        if "rate_limit" in error_msg.lower() or "429" in error_msg:
+                            if current_retry < settings.OPENAI_MAX_RETRIES:
+                                # Extract wait time from error message
+                                wait_time = 1.0
+                                if "try again in" in error_msg.lower():
+                                    import re
+                                    match = re.search(r'try again in (\d+)ms', error_msg)
+                                    if match:
+                                        wait_time = int(match.group(1)) / 1000.0
+                                
+                                # Add exponential backoff
+                                wait_time = wait_time + (0.5 * (2 ** current_retry))
+                                print(f"   ⏳ Rate limit hit, waiting {wait_time:.1f}s... (retry {current_retry + 1}/{settings.OPENAI_MAX_RETRIES})")
+                                time.sleep(wait_time)
+                                current_retry += 1
+                            else:
+                                raise batch_error
+                        else:
+                            raise batch_error
+                
+                elapsed = time.time() - start_time
+                rate = len(batch) / elapsed if elapsed > 0 else 0
+                print(f"   ✅ Completed in {elapsed:.2f}s ({rate:.1f} embeddings/sec)")
+                
+                # Small delay between batches to avoid hitting rate limits
+                if batch_num < total_batches:
+                    time.sleep(0.6)  # 600ms as suggested by OpenAI
             
-        Returns:
-            Dummy embedding vector
-        """
-        # Use hash for deterministic dummy embeddings
-        np.random.seed(hash(text) % (2**32))
-        embedding = np.random.randn(dimensions)
-        # Normalize to unit vector
-        embedding = embedding / np.linalg.norm(embedding)
-        return embedding.tolist()
+            return all_embeddings
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Error generating OpenAI embeddings batch: {e}")
+            
+            # If batch is too large, retry with smaller size
+            if "too many" in error_msg.lower() or "too_many" in error_msg.lower():
+                new_batch_size = max(batch_size // 2, 10)
+                print(f"   ⚠️  Batch too large, retrying with batch_size={new_batch_size}...")
+                return self.generate_embeddings_batch(texts, batch_size=new_batch_size, retry_count=retry_count + 1)
+            
+            return [None] * len(texts)
     
     def get_dimensions(self) -> int:
         """Get the dimensionality of embeddings"""
-        if self.model is None:
-            return 384  # Default for all-MiniLM-L6-v2
-        
-        # Generate a test embedding to get dimensions
-        test_embedding = self.generate_embedding("test")
-        return len(test_embedding) if test_embedding else 384
+        return settings.OPENAI_EMBEDDING_DIMENSIONS
 
 
 class VectorSearchService:

@@ -13,6 +13,7 @@ from app.services.article_processor import article_processor
 from app.services.tag_generator import tag_generator
 from app.services.embeddings import embedding_service
 from app.services.duplicate_detection import duplicate_detector
+from app.core.config import settings
 from app.schemas.articles import (
     ArticleInput,
     ArticleProcessResponse,
@@ -31,7 +32,7 @@ async def process_articles(
     max_tags: int = Query(15, ge=1, le=30, description="Maximum number of tags"),
     chunk_size: int = Query(1500, ge=100, le=5000, description="Chunk size in characters (default: 1500)"),
     chunk_overlap: int = Query(400, ge=0, le=1500, description="Overlap between chunks (~26%, default: 400)"),
-    dry_run: bool = Query(False, description="If true, save chunks to txt files instead of DB"),
+    dry_run: bool = Query(default=None, description="If true, save chunks to txt files instead of DB. If None, uses DRY_RUN environment variable"),
     check_duplicates: bool = Query(True, description="Check for duplicate chunks before inserting"),
     similarity_threshold: float = Query(0.95, ge=0.0, le=1.0, description="Similarity threshold for duplicate detection"),
     db = Depends(get_mongo_db)
@@ -51,6 +52,10 @@ async def process_articles(
     
     start_time = time.time()
     
+    # Use environment DRY_RUN if not explicitly provided
+    if dry_run is None:
+        dry_run = settings.DRY_RUN
+    
     # Update duplicate detector threshold
     duplicate_detector.similarity_threshold = similarity_threshold
     
@@ -60,6 +65,8 @@ async def process_articles(
     
     print(f"\n{'='*70}")
     print(f"📦 BATCH PROCESSING: {len(articles)} articles")
+    if dry_run:
+        print(f"⚠️  DRY_RUN MODE: Saving to TXT files in dry_runs/articles/")
     print(f"{'='*70}\n")
     
     # Configure article processor

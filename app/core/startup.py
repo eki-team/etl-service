@@ -19,9 +19,18 @@ from app.core.config import settings
 
 async def ensure_collections():
     """Ensure required MongoDB collections exist with proper indexes"""
+    # Skip MongoDB initialization in DRY_RUN mode
+    if settings.DRY_RUN:
+        print("🔧 Skipping MongoDB collections initialization (DRY_RUN mode)")
+        return
+    
     print("🔧 Initializing MongoDB collections...")
     
     db = await get_mongo_db()
+    
+    if db is None:
+        print("   ⚠️  No database connection available")
+        return
     
     # Create chunks collection if it doesn't exist
     collections = await db.list_collection_names()
@@ -72,7 +81,7 @@ async def load_articles_from_json(
         return {"success": False, "error": str(e)}
     
     # Process articles
-    db = await get_mongo_db()
+    db = await get_mongo_db() if not settings.DRY_RUN else None
     article_processor = ArticleProcessor(chunk_size=1500, chunk_overlap=400)
     
     total_articles = len(articles_data)
@@ -105,12 +114,14 @@ async def load_articles_from_json(
             chunks_created = 0
             duplicates_skipped = 0
             
-            # Store chunks in MongoDB
+            print(f"      🔮 Generating embeddings for {len(result['chunks'])} chunks...")
+            
+            # Store chunks in MongoDB or TXT files
             for chunk_data in result["chunks"]:
-                # Check for duplicates
+                # Check for duplicates (only in normal mode with DB access)
                 is_duplicate = False
                 
-                if check_duplicates:
+                if check_duplicates and not settings.DRY_RUN and db is not None:
                     duplicate = await duplicate_detector.find_similar_chunk(
                         text=chunk_data["text"],
                         db=db,
@@ -131,12 +142,16 @@ async def load_articles_from_json(
                     while '--' in normalized_pk:
                         normalized_pk = normalized_pk.replace('--', '-')
                     
+                    # Generate embedding for the chunk
+                    embedding = embedding_service.generate_embedding(chunk_data["text"])
+                    
                     # Prepare chunk document
                     chunk_doc = {
                         "pk": normalized_pk,
                         "text": chunk_data["text"],
                         "source_type": "article",
                         "source_url": article_data.get("url", ""),
+                        "embedding": embedding,  # Add embedding vector
                         "metadata": {
                             "article_metadata": result["metadata"],
                             "references": article_data.get("references", []),
@@ -152,9 +167,35 @@ async def load_articles_from_json(
                         "updated_at": datetime.utcnow()
                     }
                     
-                    # Insert into MongoDB
-                    await db.chunks.insert_one(chunk_doc)
-                    chunks_created += 1
+                    # DRY_RUN mode: save to TXT files instead of MongoDB
+                    if settings.DRY_RUN:
+                        # Create dry_runs/articles directory if it doesn't exist
+                        dry_run_dir = Path("dry_runs/articles")
+                        dry_run_dir.mkdir(parents=True, exist_ok=True)
+                        
+                        # Generate filename with timestamp
+                        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+                        filename = f"{normalized_pk}-chunk-{chunk_data['chunk_index']}-{timestamp}.txt"
+                        file_path = dry_run_dir / filename
+                        
+                        # Write chunk to file
+                        with open(file_path, "w", encoding="utf-8") as f:
+                            f.write(f"PK: {normalized_pk}\n")
+                            f.write(f"Chunk: {chunk_data['chunk_index'] + 1}/{chunk_data['total_chunks']}\n")
+                            f.write(f"URL: {article_data.get('url', '')}\n")
+                            f.write(f"Tags: {', '.join(tags)}\n")
+                            f.write(f"Category: {category}\n")
+                            if embedding:
+                                f.write(f"Embedding: {len(embedding)} dimensions\n")
+                                f.write(f"Embedding preview: [{', '.join(str(x) for x in embedding[:5])}...]\n")
+                            f.write(f"{'='*70}\n\n")
+                            f.write(chunk_data["text"])
+                        
+                        chunks_created += 1
+                    else:
+                        # Normal mode: Insert into MongoDB
+                        await db.chunks.insert_one(chunk_doc)
+                        chunks_created += 1
             
             total_chunks_created += chunks_created
             total_duplicates_skipped += duplicates_skipped
@@ -203,25 +244,35 @@ async def startup_initialization():
         # Step 1: Ensure MongoDB collections
         await ensure_collections()
         
-        # Step 2: Load articles from complete_scrapping.json (if enabled)
+        # Step 2: Load articles from JSON file (if enabled)
         if settings.AUTO_LOAD_ARTICLES:
-            articles_dir = Path("articles")
-            complete_scrapping_path = articles_dir / "complete_scrapping.json"
+            # Show DRY_RUN mode status
+            if settings.DRY_RUN:
+                print("⚠️  DRY_RUN MODE ENABLED - Chunks will be saved to TXT files in dry_runs/articles/")
+                print("   No data will be written to MongoDB")
+            else:
+                print("💾 NORMAL MODE - Chunks will be saved to MongoDB")
             
-            if complete_scrapping_path.exists():
+            articles_dir = Path("articles")
+            articles_file_path = articles_dir / settings.ARTICLES_JSON_FILE
+            
+            print(f"📄 Loading articles from: {settings.ARTICLES_JSON_FILE}")
+            
+            if articles_file_path.exists():
                 result = await load_articles_from_json(
-                    complete_scrapping_path,
+                    articles_file_path,
                     check_duplicates=True,
                     similarity_threshold=0.95
                 )
                 
                 if result.get("success"):
-                    print(f"✅ Successfully loaded articles from {complete_scrapping_path.name}")
+                    print(f"✅ Successfully loaded articles from {articles_file_path.name}")
                 else:
                     print(f"⚠️  Failed to load articles: {result.get('error', 'Unknown error')}")
             else:
-                print(f"⚠️  No complete_scrapping.json found in {articles_dir}")
+                print(f"⚠️  File '{settings.ARTICLES_JSON_FILE}' not found in {articles_dir}")
                 print(f"   Skipping article loading...")
+                print(f"   💡 Tip: Set ARTICLES_JSON_FILE in .env to change the source file")
         else:
             print("ℹ️  AUTO_LOAD_ARTICLES is disabled, skipping article loading")
             print("   To load articles manually, run: python scripts/load_articles.py")
