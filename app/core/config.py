@@ -1,51 +1,37 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
-import os
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
+from typing import Optional
 
 class Settings(BaseSettings):
-    POSTGRES_USER: str
-    POSTGRES_PASSWORD: str
-    POSTGRES_DB: str
-    DB_HOST: str = "localhost"
-    DB_PORT: str = "5432"
-
-    SECRET_KEY: str
-    ALGORITHM: str
-    ACCESS_TOKEN_EXPIRE_MINUTES: int
-
-    @staticmethod
-    def _normalize_db_url(raw: str) -> str:
-        if not raw:
-            return raw
-        p = urlparse(raw)
-
-        scheme = p.scheme
-        if scheme in ("postgres", "postgresql"):
-            scheme = "postgresql+psycopg2"
-
-        if "+psycopg2" not in scheme and scheme.startswith("postgresql"):
-            scheme = "postgresql+psycopg2"
-
-        query = p.query or ""
-        if (p.hostname or "").endswith("render.com") and "sslmode=" not in query:
-            q = parse_qs(query)
-            q["sslmode"] = ["require"]
-            query = urlencode(q, doseq=True)
-
-        return urlunparse((scheme, p.netloc, p.path, p.params, query, p.fragment))
+    # MongoDB Configuration
+    MONGO_USER: str = "admin"
+    MONGO_PASSWORD: str = "admin"
+    MONGO_HOST: str = "localhost"
+    MONGO_PORT: str = "27017"
+    MONGO_DB: str = "mydb"
+    MONGO_URI: Optional[str] = None
+    
+    # Environment
+    ENVIRONMENT: str = "development"
 
     @property
-    def DATABASE_URL(self) -> str:
-        raw = os.getenv("DATABASE_URL")
-        if raw:
-            return self._normalize_db_url(raw)
-
-        built = (
-            f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
-            f"@{self.DB_HOST}:{self.DB_PORT}/{self.POSTGRES_DB}"
+    def MONGO_URL(self) -> str:
+        """MongoDB connection URL - uses MONGO_URI if set, otherwise builds from components"""
+        # Si existe MONGO_URI en el .env, usarla directamente
+        if self.MONGO_URI:
+            # Remover comillas si existen
+            uri = self.MONGO_URI.strip().strip('"').strip("'")
+            return uri
+        
+        # Si no, construir desde componentes individuales
+        return (
+            f"mongodb://{self.MONGO_USER}:{self.MONGO_PASSWORD}"
+            f"@{self.MONGO_HOST}:{self.MONGO_PORT}/{self.MONGO_DB}?authSource=admin"
         )
-        return self._normalize_db_url(built)
 
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore"  # Ignora variables extras del .env
+    )
 
 settings = Settings()
