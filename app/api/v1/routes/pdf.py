@@ -112,9 +112,16 @@ async def upload_pdf(
                 "updated_at": datetime.utcnow()
             }
             
-            # Generate embedding if requested
+            # Generate embedding if requested (include tags for better search)
             if generate_embeddings:
-                embedding = embedding_service.generate_embedding(chunk_data["text"])
+                # Include tags and category in the embedding
+                text_with_metadata = chunk_data["text"]
+                if tags:
+                    text_with_metadata += f"\n\nKeywords: {', '.join(tags)}"
+                if category:
+                    text_with_metadata += f"\nCategory: {category}"
+                
+                embedding = embedding_service.generate_embedding(text_with_metadata)
                 if embedding:
                     chunk_doc["embedding"] = embedding
                     chunk_doc["embedding_model"] = embedding_service.model_name

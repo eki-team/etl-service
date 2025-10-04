@@ -145,7 +145,14 @@ async def process_articles(
                         f.write(f"Sentences: {len(chunk_data['sentences'])}\n")
                         
                         if generate_embeddings:
-                            embedding = embedding_service.generate_embedding(chunk_data["text"])
+                            # Generate embedding with tags included
+                            text_with_metadata = chunk_data["text"]
+                            if tags:
+                                text_with_metadata += f"\n\nKeywords: {', '.join(tags)}"
+                            if category:
+                                text_with_metadata += f"\nCategory: {category}"
+                            
+                            embedding = embedding_service.generate_embedding(text_with_metadata)
                             if embedding:
                                 f.write(f"Embedding: {len(embedding)} dimensions\n")
                                 f.write(f"Embedding preview: [{', '.join(map(str, embedding[:5]))}...]\n")
@@ -219,7 +226,14 @@ async def process_articles(
                     
                     # Generate embedding if requested and add to document
                     if generate_embeddings:
-                        embedding = embedding_service.generate_embedding(chunk_data["text"])
+                        # Include tags and category in the embedding
+                        text_with_metadata = chunk_data["text"]
+                        if tags:
+                            text_with_metadata += f"\n\nKeywords: {', '.join(tags)}"
+                        if category:
+                            text_with_metadata += f"\nCategory: {category}"
+                        
+                        embedding = embedding_service.generate_embedding(text_with_metadata)
                         if embedding:
                             chunk_doc["embedding"] = embedding
                             chunk_doc["embedding_model"] = embedding_service.model_name

@@ -51,7 +51,7 @@ async def ensure_collections():
 
 async def load_articles_from_json(
     json_path: Path,
-    check_duplicates: bool = False,  # Disabled by default for faster loading
+    check_duplicates: bool = True,  # Disabled by default for faster loading
     similarity_threshold: float = 0.95
 ) -> Dict[str, Any]:
     """
@@ -142,8 +142,15 @@ async def load_articles_from_json(
                     while '--' in normalized_pk:
                         normalized_pk = normalized_pk.replace('--', '-')
                     
-                    # Generate embedding for the chunk
-                    embedding = embedding_service.generate_embedding(chunk_data["text"])
+                    # Generate embedding for the chunk WITH TAGS
+                    # Concatenate tags and category to enhance vector search
+                    text_with_metadata = chunk_data["text"]
+                    if tags:
+                        text_with_metadata += f"\n\nKeywords: {', '.join(tags)}"
+                    if category:
+                        text_with_metadata += f"\nCategory: {category}"
+                    
+                    embedding = embedding_service.generate_embedding(text_with_metadata)
                     
                     # Prepare chunk document
                     chunk_doc = {
