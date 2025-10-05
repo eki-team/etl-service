@@ -32,6 +32,7 @@ class ArticleInput(BaseModel):
     abstract: str = ""
     full_text: ArticleFullText = Field(default_factory=ArticleFullText)
     references: List[Any] = Field(default_factory=list)
+    publication_year: Optional[int] = None
     statistics: ArticleStatistics = Field(default_factory=ArticleStatistics)
     scraped_at: str
     success: bool = True

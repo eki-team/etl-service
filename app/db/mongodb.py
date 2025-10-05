@@ -27,14 +27,17 @@ async def connect_to_mongo():
         print(f"📍 Cluster: nasakb.yvrx6cs.mongodb.net")
         print(f"💾 Database: {settings.MONGO_DB}")
         
-        # Optimized configuration for MongoDB Atlas
+        # Optimized configuration for MongoDB Atlas (Free Tier - No Sessions)
         motor_client = AsyncIOMotorClient(
             settings.MONGO_URL,
-            serverSelectionTimeoutMS=30000,  # 30 seconds timeout (increased from 5s)
-            connectTimeoutMS=30000,           # 30 seconds connection timeout
-            socketTimeoutMS=60000,            # 60 seconds socket timeout
-            maxPoolSize=50,                   # Max connections in pool
-            retryWrites=True,                 # Enable retry writes
+            serverSelectionTimeoutMS=60000,   # 60 seconds timeout for server selection
+            connectTimeoutMS=60000,           # 60 seconds connection timeout
+            socketTimeoutMS=300000,           # 5 minutes socket timeout for large operations
+            maxPoolSize=10,                   # Reduced pool size to save resources
+            minPoolSize=1,                    # Keep minimum connections
+            maxIdleTimeMS=30000,              # Close idle connections after 30 seconds
+            retryWrites=False,                # Disable retry writes (saves space, no sessions)
+            retryReads=False,                 # Disable retry reads (saves space, no sessions)
             w='majority',                     # Write concern
             tlsAllowInvalidCertificates=False # Validate SSL certificates
         )

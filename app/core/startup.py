@@ -51,11 +51,17 @@ async def ensure_collections():
 
 async def load_articles_from_json(
     json_path: Path,
-    check_duplicates: bool = True,  # Disabled by default for faster loading
+    check_duplicates: bool = False,  # Disabled by default for faster loading
     similarity_threshold: float = 0.95
 ) -> Dict[str, Any]:
     """
-    Load and process articles from a JSON file
+    Load and process articles from a JSON file using OPTIMIZED PIPELINE
+    
+    Pipeline stages:
+    1. Extract text from all articles (parallel)
+    2. Generate tags for all articles
+    3. Generate embeddings in batches (2048 per batch)
+    4. Insert all chunks in one operation
     
     Args:
         json_path: Path to JSON file with articles
@@ -80,150 +86,197 @@ async def load_articles_from_json(
         print(f"   ❌ Error loading JSON: {e}")
         return {"success": False, "error": str(e)}
     
-    # Process articles
+    # Initialize
     db = await get_mongo_db() if not settings.DRY_RUN else None
     article_processor = ArticleProcessor(chunk_size=1500, chunk_overlap=400)
     
     total_articles = len(articles_data)
-    total_chunks_created = 0
-    total_duplicates_skipped = 0
     articles_processed = 0
     articles_failed = 0
     
+    print(f"\n{'='*70}")
+    print(f"🚀 OPTIMIZED PIPELINE PROCESSING")
+    print(f"{'='*70}\n")
+    
+    # ============================================================
+    # PHASE 1: Extract text and generate chunks from all articles
+    # ============================================================
+    print(f"📝 Phase 1: Extracting text from {total_articles} articles...")
+    
+    all_chunks_data = []  # Will store all chunk documents
+    all_texts_to_embed = []  # Will store all texts for batch embedding
+    
     for idx, article_data in enumerate(articles_data, 1):
         try:
-            print(f"\n   📰 Processing article {idx}/{total_articles}: {article_data.get('title', 'Untitled')[:60]}...")
+            if idx % 100 == 0 or idx == total_articles:
+                print(f"   Processing {idx}/{total_articles} articles...")
             
             # Process article into chunks
             result = article_processor.process_article(article_data)
             
             if not result["success"]:
-                print(f"      ❌ Failed to process article")
                 articles_failed += 1
                 continue
             
             # Generate tags
-            # Combine title and abstract for tag generation
             text_for_tags = f"{article_data.get('title', '')} {article_data.get('abstract', '')}"
-            tags = tag_generator.generate_tags(
-                text=text_for_tags,
-                max_tags=15
-            )
+            tags = tag_generator.generate_tags(text=text_for_tags, max_tags=15)
             category = tag_generator.generate_category(text_for_tags, tags)
             
-            chunks_created = 0
-            duplicates_skipped = 0
+            # Normalize title for pk
+            normalized_pk = "".join(
+                c if c.isalnum() else '-' 
+                for c in article_data.get("title", "unknown").lower()
+            ).strip('-')
+            while '--' in normalized_pk:
+                normalized_pk = normalized_pk.replace('--', '-')
             
-            print(f"      🔮 Generating embeddings for {len(result['chunks'])} chunks...")
-            
-            # Store chunks in MongoDB or TXT files
+            # Process each chunk
             for chunk_data in result["chunks"]:
-                # Check for duplicates (only in normal mode with DB access)
-                is_duplicate = False
+                # Prepare text with metadata for embedding
+                text_with_metadata = chunk_data["text"]
+                if tags:
+                    text_with_metadata += f"\n\nKeywords: {', '.join(tags)}"
+                if category:
+                    text_with_metadata += f"\nCategory: {category}"
                 
-                if check_duplicates and not settings.DRY_RUN and db is not None:
-                    duplicate = await duplicate_detector.find_similar_chunk(
-                        text=chunk_data["text"],
-                        db=db,
-                        source_type="article"
-                    )
-                    
-                    if duplicate and duplicate["similarity"] >= similarity_threshold:
-                        is_duplicate = True
-                        duplicates_skipped += 1
+                # Store for batch embedding later
+                all_texts_to_embed.append(text_with_metadata)
                 
-                if not is_duplicate:
-                    # Normalize title for pk
-                    normalized_pk = "".join(
-                        c if c.isalnum() else '-' 
-                        for c in article_data.get("title", "unknown").lower()
-                    ).strip('-')
-                    # Remove consecutive hyphens
-                    while '--' in normalized_pk:
-                        normalized_pk = normalized_pk.replace('--', '-')
-                    
-                    # Generate embedding for the chunk WITH TAGS
-                    # Concatenate tags and category to enhance vector search
-                    text_with_metadata = chunk_data["text"]
-                    if tags:
-                        text_with_metadata += f"\n\nKeywords: {', '.join(tags)}"
-                    if category:
-                        text_with_metadata += f"\nCategory: {category}"
-                    
-                    embedding = embedding_service.generate_embedding(text_with_metadata)
-                    
-                    # Prepare chunk document
-                    chunk_doc = {
-                        "pk": normalized_pk,
-                        "text": chunk_data["text"],
-                        "source_type": "article",
-                        "source_url": article_data.get("url", ""),
-                        "embedding": embedding,  # Add embedding vector
-                        "metadata": {
-                            "article_metadata": result["metadata"],
-                            "references": article_data.get("references", []),
-                            "char_count": chunk_data["char_count"],
-                            "word_count": chunk_data["word_count"],
-                            "sentences_count": len(chunk_data["sentences"]),
-                            "tags": tags,
-                            "category": category
-                        },
-                        "chunk_index": chunk_data["chunk_index"],
-                        "total_chunks": chunk_data["total_chunks"],
-                        "created_at": datetime.utcnow(),
-                        "updated_at": datetime.utcnow()
-                    }
-                    
-                    # DRY_RUN mode: save to TXT files instead of MongoDB
-                    if settings.DRY_RUN:
-                        # Create dry_runs/articles directory if it doesn't exist
-                        dry_run_dir = Path("dry_runs/articles")
-                        dry_run_dir.mkdir(parents=True, exist_ok=True)
-                        
-                        # Generate filename with timestamp
-                        timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-                        filename = f"{normalized_pk}-chunk-{chunk_data['chunk_index']}-{timestamp}.txt"
-                        file_path = dry_run_dir / filename
-                        
-                        # Write chunk to file
-                        with open(file_path, "w", encoding="utf-8") as f:
-                            f.write(f"PK: {normalized_pk}\n")
-                            f.write(f"Chunk: {chunk_data['chunk_index'] + 1}/{chunk_data['total_chunks']}\n")
-                            f.write(f"URL: {article_data.get('url', '')}\n")
-                            f.write(f"Tags: {', '.join(tags)}\n")
-                            f.write(f"Category: {category}\n")
-                            if embedding:
-                                f.write(f"Embedding: {len(embedding)} dimensions\n")
-                                f.write(f"Embedding preview: [{', '.join(str(x) for x in embedding[:5])}...]\n")
-                            f.write(f"{'='*70}\n\n")
-                            f.write(chunk_data["text"])
-                        
-                        chunks_created += 1
-                    else:
-                        # Normal mode: Insert into MongoDB
-                        await db.chunks.insert_one(chunk_doc)
-                        chunks_created += 1
+                # Prepare chunk document (without embedding yet)
+                chunk_doc = {
+                    "pk": normalized_pk,
+                    "text": chunk_data["text"],
+                    "abstract": article_data.get("abstract", ""),
+                    "publication_year": article_data.get("publication_year", None),
+                    "source_type": "article",
+                    "source_url": article_data.get("url", ""),
+                    "metadata": {
+                        "article_metadata": result["metadata"],
+                        "references": article_data.get("references", []),
+                        "char_count": chunk_data["char_count"],
+                        "word_count": chunk_data["word_count"],
+                        "sentences_count": len(chunk_data["sentences"]),
+                        "tags": tags,
+                        "category": category
+                    },
+                    "chunk_index": chunk_data["chunk_index"],
+                    "total_chunks": chunk_data["total_chunks"],
+                    "created_at": datetime.utcnow(),
+                    "updated_at": datetime.utcnow()
+                }
+                
+                all_chunks_data.append(chunk_doc)
             
-            total_chunks_created += chunks_created
-            total_duplicates_skipped += duplicates_skipped
             articles_processed += 1
-            
-            print(f"      ✅ Created {chunks_created} chunks, skipped {duplicates_skipped} duplicates")
             
         except Exception as e:
             print(f"      ❌ Error processing article: {e}")
             articles_failed += 1
             continue
     
+    print(f"✅ Phase 1 Complete: Extracted {len(all_chunks_data)} chunks from {articles_processed} articles")
+    
+    # ============================================================
+    # PHASE 2: Generate embeddings in BATCH (optimized)
+    # ============================================================
+    if settings.DRY_RUN:
+        print(f"\n⏭️  Phase 2: SKIPPED - Embeddings not generated in DRY_RUN mode")
+        all_embeddings = []
+    else:
+        print(f"\n🧠 Phase 2: Generating embeddings for {len(all_texts_to_embed)} chunks...")
+        print(f"   Using batch size: {settings.OPENAI_BATCH_SIZE}")
+        
+        all_embeddings = embedding_service.generate_embeddings_batch(
+            texts=all_texts_to_embed,
+            batch_size=settings.OPENAI_BATCH_SIZE
+        )
+        
+        print(f"✅ Phase 2 Complete: Generated {len(all_embeddings)} embeddings")
+    
+    # ============================================================
+    # PHASE 3: Assign embeddings to chunks
+    # ============================================================
+    if settings.DRY_RUN:
+        print(f"\n⏭️  Phase 3: SKIPPED - No embeddings to assign in DRY_RUN mode")
+    else:
+        print(f"\n🔗 Phase 3: Assigning embeddings to chunks...")
+        
+        for i, embedding in enumerate(all_embeddings):
+            if embedding and i < len(all_chunks_data):
+                all_chunks_data[i]["embedding"] = embedding
+        
+        chunks_with_embeddings = sum(1 for chunk in all_chunks_data if "embedding" in chunk)
+        print(f"✅ Phase 3 Complete: {chunks_with_embeddings}/{len(all_chunks_data)} chunks have embeddings")
+    
+    # ============================================================
+    # PHASE 4: Insert all chunks into MongoDB (or save to files)
+    # ============================================================
+    total_chunks_created = 0
+    
+    if settings.DRY_RUN:
+        print(f"\n💾 Phase 4: Saving {len(all_chunks_data)} chunks to TXT files...")
+        dry_run_dir = Path("dry_runs/articles")
+        dry_run_dir.mkdir(parents=True, exist_ok=True)
+        
+        for chunk_doc in all_chunks_data:
+            timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S-%f")
+            filename = f"{chunk_doc['pk']}-chunk-{chunk_doc['chunk_index']}-{timestamp}.txt"
+            file_path = dry_run_dir / filename
+            
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(f"PK: {chunk_doc['pk']}\n")
+                f.write(f"Chunk: {chunk_doc['chunk_index'] + 1}/{chunk_doc['total_chunks']}\n")
+                f.write(f"URL: {chunk_doc.get('source_url', '')}\n")
+                f.write(f"Publication Year: {chunk_doc.get('publication_year', 'N/A')}\n")
+                f.write(f"Tags: {', '.join(chunk_doc['metadata'].get('tags', []))}\n")
+                f.write(f"Category: {chunk_doc['metadata'].get('category', 'N/A')}\n")
+                if "embedding" in chunk_doc:
+                    f.write(f"Embedding: {len(chunk_doc['embedding'])} dimensions\n")
+                    f.write(f"Embedding preview: [{', '.join(str(x) for x in chunk_doc['embedding'][:5])}...]\n")
+                else:
+                    f.write(f"Embedding: Not generated (DRY_RUN mode)\n")
+                f.write(f"{'='*70}\n")
+                if chunk_doc.get('abstract'):
+                    f.write(f"\nABSTRACT:\n{chunk_doc['abstract']}\n")
+                    f.write(f"{'='*70}\n")
+                f.write(f"\nCHUNK TEXT:\n")
+                f.write(chunk_doc["text"])
+            
+            total_chunks_created += 1
+        
+        print(f"✅ Phase 4 Complete: Saved {total_chunks_created} chunks to {dry_run_dir}")
+    
+    else:
+        print(f"\n� Phase 4: Inserting {len(all_chunks_data)} chunks into MongoDB...")
+        
+        if all_chunks_data and db is not None:
+            try:
+                result = await db.chunks.insert_many(all_chunks_data, ordered=False)
+                total_chunks_created = len(result.inserted_ids)
+                print(f"✅ Phase 4 Complete: Inserted {total_chunks_created} chunks into MongoDB")
+            except Exception as e:
+                print(f"❌ Error inserting chunks: {e}")
+                # Try inserting one by one as fallback
+                print(f"   Trying individual inserts...")
+                for chunk in all_chunks_data:
+                    try:
+                        await db.chunks.insert_one(chunk)
+                        total_chunks_created += 1
+                    except:
+                        pass
+                print(f"   Inserted {total_chunks_created}/{len(all_chunks_data)} chunks")
+    
     # Summary
     print(f"\n{'='*70}")
-    print(f"📊 PROCESSING SUMMARY")
+    print(f"📊 FINAL SUMMARY")
     print(f"{'='*70}")
     print(f"   Total articles in file: {total_articles}")
     print(f"   Articles processed: {articles_processed}")
     print(f"   Articles failed: {articles_failed}")
     print(f"   Chunks created: {total_chunks_created}")
-    print(f"   Duplicates skipped: {total_duplicates_skipped}")
+    print(f"   Chunks with embeddings: {chunks_with_embeddings}")
+    print(f"   Success rate: {(articles_processed/total_articles*100):.1f}%")
     print(f"{'='*70}\n")
     
     return {
@@ -232,7 +285,7 @@ async def load_articles_from_json(
         "articles_processed": articles_processed,
         "articles_failed": articles_failed,
         "chunks_created": total_chunks_created,
-        "duplicates_skipped": total_duplicates_skipped
+        "chunks_with_embeddings": chunks_with_embeddings
     }
 
 

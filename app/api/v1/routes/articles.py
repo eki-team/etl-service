@@ -207,6 +207,8 @@ async def process_articles(
                     chunk_doc = {
                         "pk": normalized_pk,
                         "text": chunk_data["text"],
+                        "abstract": article.abstract if article.abstract else "",
+                        "publication_year": article.publication_year if hasattr(article, 'publication_year') else None,
                         "source_type": "article",
                         "source_url": article.url,
                         "metadata": {
@@ -236,7 +238,6 @@ async def process_articles(
                         embedding = embedding_service.generate_embedding(text_with_metadata)
                         if embedding:
                             chunk_doc["embedding"] = embedding
-                            chunk_doc["embedding_model"] = embedding_service.model_name
                             chunks_with_embeddings += 1
                     
                     # Insert into MongoDB

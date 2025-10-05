@@ -94,6 +94,7 @@ async def upload_pdf(
             chunk_doc = {
                 "pk": file.filename,
                 "text": chunk_data["text"],
+                "abstract": "",  # PDFs don't have separate abstract field
                 "source_type": "pdf",
                 "metadata": {
                     "pdf_metadata": result["metadata"],
@@ -221,6 +222,7 @@ async def upload_pdf_batch(
             for chunk_data in result["chunks"]:
                 chunk_doc = {
                     "text": chunk_data["text"],
+                    "abstract": "",  # PDFs don't have separate abstract field
                     "source": file.filename,
                     "source_type": "pdf",
                     "metadata": {

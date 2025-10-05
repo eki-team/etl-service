@@ -189,11 +189,14 @@ class EmbeddingService:
             error_msg = str(e)
             print(f"❌ Error generating OpenAI embeddings batch: {e}")
             
-            # If batch is too large, retry with smaller size
-            if "too many" in error_msg.lower() or "too_many" in error_msg.lower():
+            # If batch is too large (tokens exceeded), retry with smaller size
+            if any(keyword in error_msg.lower() for keyword in [
+                "too many", "too_many", "max_tokens", "tokens", "400"
+            ]):
                 new_batch_size = max(batch_size // 2, 10)
                 print(f"   ⚠️  Batch too large, retrying with batch_size={new_batch_size}...")
-                return self.generate_embeddings_batch(texts, batch_size=new_batch_size, retry_count=retry_count + 1)
+                if retry_count < 5:  # Max 5 retries
+                    return self.generate_embeddings_batch(texts, batch_size=new_batch_size, retry_count=retry_count + 1)
             
             return [None] * len(texts)
     
